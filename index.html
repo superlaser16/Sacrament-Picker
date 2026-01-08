@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Weekly Picker (Fair Rotation)</title>
+<style>
+  body { font-family: Arial, sans-serif; background:#f3f4f6; padding:20px; }
+  h1{ text-align:center; color:#333; }
+  .person{ display:flex; justify-content:space-between; background:#fff; margin:6px 0; padding:10px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.08); }
+  select{ font-size:1em; padding:4px; }
+  button{ display:inline-block; margin:14px 8px 0 0; padding:10px 16px; font-size:1em; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; }
+  button.secondary{ background:#6b7280; }
+  #controls{ text-align:center; }
+  #results{ text-align:center; font-size:1.1em; margin-top:18px; }
+  #log{ margin-top:12px; font-size:0.95em; background:#fff; padding:8px; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,0.06); max-width:600px; margin-left:auto; margin-right:auto; }
+</style>
+</head>
+<body>
+  <h1>Sacrament Rotation</h1>
+
+  <div id="people"></div>
+
+  <div id="controls">
+    <button id="pickBtn">Pick 3</button>
+    <button id="clearBtn" class="secondary">Clear history</button>
+  </div>
+
+  <div id="results"></div>
+  <div id="log"></div>
+
+<script>
+/* === CONFIG === */
+const PEOPLE = ["Isaac","Harry","Grant","Elias","Josh","Leland","Hunter","Spencer","Kaden"];
+const MAX_HISTORY = 50;
+
+/* === STATE === */
+let history = [];
+
+const PASSWORD = "S@crament1"; // must match the one in Apps Script
+const SHEET_URL = "https://script.google.com/macros/s/AKfycbwPB5-rkYS6dYGtVwSzCGIGUJ8hPVwcwW9Jaxuc1s8n7KI0zZFFoqNPAAUsV5eRSXA/exec" + "?password=" + PASSWORD;
+
+async function loadHistory() {
+  try {
+    const res = await fetch(SHEET_URL);
+    history = await res.json();
+    if (!Array.isArray(history)) history = [];
+  } catch (err) {
+    console.error("Error loading history:", err);
+    history = [];
+  }
+}
+
+/* === DOM refs === */
+const peopleContainer = document.getElementById("people");
+const resultsDiv = document.getElementById("results");
+const logDiv = document.getElementById("log");
+const pickBtn = document.getElementById("pickBtn");
+const clearBtn = document.getElementById("clearBtn");
+
+/* === Build dropdown UI === */
+function buildDropdowns(){
+  peopleContainer.innerHTML = "";
+  PEOPLE.forEach(name => {
+    const div = document.createElement("div");
+    div.className = "person";
+    div.innerHTML = `
+      <span>${name}</span>
+      <select id="status-${name}">
+        <option value="here" selected>Here</option>
+        <option value="not">Not Here</option>
+      </select>
+    `;
+    peopleContainer.appendChild(div);
+  });
+}
+buildDropdowns();
+
+/* === Helpers === */
+function getAvailablePeople(){
+  return PEOPLE.filter(name => {
+    const el = document.getElementById(`status-${name}`);
+    return el && el.value === "here";
+  });
+}
+
+function shuffleArray(arr){
+  for (let i = arr.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/* === Fair Rotation Logic === */
+function buildStats(){
+  const stats = {};
+  PEOPLE.forEach(p => stats[p] = { count: 0, last: -Infinity });
+
+  history.forEach((week, i) => {
+    const age = history.length - i;
+    week.forEach(p => {
+      stats[p].count++;
+      stats[p].last = Math.max(stats[p].last, age);
+    });
+  });
+  return stats;
+}
+
+function pickFairly(available){
+  const stats = buildStats();
+
+  // Filter to available people only
+  const availStats = available.map(p => ({
+    name: p,
+    count: stats[p].count,
+    last: stats[p].last
+  }));
+
+  // Step 1: Find lowest count (fewest total times picked)
+  const minCount = Math.min(...availStats.map(s => s.count));
+  let candidates = availStats.filter(s => s.count === minCount);
+
+  // Step 2: Among those, find those who haven't gone recently
+  const maxLast = Math.max(...candidates.map(s => s.last));
+  const oldest = candidates.filter(s => s.last < maxLast);
+
+  if (oldest.length > 0) candidates = oldest;
+
+  // Step 3: Randomize and pick 3
+  shuffleArray(candidates);
+  const picks = candidates.slice(0, 3).map(s => s.name);
+
+  return picks;
+}
+
+/* === Save / Render === */
+async function saveHistory(picks) {
+  history.push(picks);
+  if (history.length > MAX_HISTORY) history.shift();
+
+  try {
+    await fetch(SHEET_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(history)
+    });
+  } catch (err) {
+    console.error("Error saving history:", err);
+  }
+}
+
+function renderLog(){
+  if (history.length === 0){
+    logDiv.innerHTML = "<em>No history yet.</em>";
+    return;
+  }
+  const lines = history.slice().reverse().map((week, idx) => {
+    const weekNum = history.length - idx;
+    return `<div><strong>Week ${weekNum}:</strong> ${week.join(", ")}</div>`;
+  });
+  logDiv.innerHTML = lines.join("");
+}
+
+/* === Main actions === */
+pickBtn.addEventListener("click", () => {
+  const available = getAvailablePeople();
+  if (available.length < 3){
+    alert("Not enough people here. Need at least 3 present.");
+    return;
+  }
+
+  const picks = pickFairly(available);
+  saveHistory(picks);
+
+  resultsDiv.innerHTML = `<strong>This week's picks:</strong><br>${picks.join(", ")}`;
+  renderLog();
+});
+
+clearBtn.addEventListener("click", () => {
+  if (!confirm("Clear saved history?")) return;
+  history = [];
+  localStorage.removeItem("pickerHistory");
+  resultsDiv.innerHTML = "";
+  renderLog();
+});
+
+/* === Initialize === */
+loadHistory().then(() => {
+  if (history.length > 0){
+    resultsDiv.innerHTML = `<em>Last picks:</em> ${history[history.length-1].join(", ")}`;
+  }
+  renderLog();
+});
+</script>
+</body>
+</html>
